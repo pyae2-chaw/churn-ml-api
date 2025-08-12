@@ -29,25 +29,25 @@ warnings.filterwarnings("ignore", message="X does not have valid feature names")
 
 app = Flask(__name__)
 
-# ------------------ CORS ------------------
+# ------------------ CORS (clean) ------------------
 LOCAL = "http://localhost:5173"
 
+# exact prod + localhost + regex for Vercel previews (as a STRING, not compiled)
 allowed_origins = [
-    os.getenv("CLIENT_ORIGIN", "https://churn-client.vercel.app"),
+    CLIENT_ORIGIN,
     LOCAL,
-    r"https://churn-client-[\w-]+-pyae-kyi-thar-chaws-projects\.vercel\.app"
+    r"^https://churn-client-[\w-]+-pyae-kyi-thar-chaws-projects\.vercel\.app$",
 ]
 
 CORS(
     app,
     resources={r"/*": {
-        "origins": allowed_origins,
-        "supports_credentials": False,
+        "origins": allowed_origins,                 # list of strings / regex-string
+        "supports_credentials": False,              # no cross-site cookies for ML API
         "methods": ["GET", "POST", "OPTIONS"],
         "allow_headers": ["Content-Type", "Authorization"],
     }},
 )
-
 
 # ------------------ Paths / Folders ------------------
 UPLOAD_FOLDER = os.getenv("UPLOAD_FOLDER", "/tmp/uploads")
