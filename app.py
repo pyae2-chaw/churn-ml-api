@@ -5,12 +5,9 @@ from dotenv import load_dotenv
 
 from flask import Flask, request, jsonify, make_response
 from flask_cors import CORS
-
-# --- ML / IO imports (keep your real model & DB here) ---
 import pandas as pd
 import joblib
 from pymongo import MongoClient
-# from xgboost import XGBClassifier  # if you load a trained model
 
 load_dotenv()
 
@@ -22,29 +19,35 @@ app = Flask(__name__)
 # Max upload size: 15 MB
 app.config["MAX_CONTENT_LENGTH"] = 15 * 1024 * 1024
 
-# If you ever set cookies from this service:
+# If you ever set cookies from this service (not needed for Option A)
 app.secret_key = os.getenv("SECRET_KEY", "change-me")
 app.permanent_session_lifetime = timedelta(days=7)
 
+# Friendly error for 413
+@app.errorhandler(413)
+def too_large(_):
+    return jsonify({"success": False, "error": "File too large. Max 15 MB."}), 413
+
 # ===========================
-# CORS (credentialed & strict)
+# CORS for JWT (no cookies)
 # ===========================
 ALLOWED_ORIGINS = [
     "https://churn-client.vercel.app",
     "http://localhost:5173",
+    # add your custom domain here if you have one, e.g. "https://yourdomain.com",
 ]
 
 CORS(
     app,
     resources={r"/*": {"origins": ALLOWED_ORIGINS}},
-    supports_credentials=True,                       # allow cookies if you need them
+    supports_credentials=True,  # safe to keep on; we're not sending cookies anyway
     methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "X-Requested-With"],
     expose_headers=["Content-Type"],
 )
 
 # ===========================
-# DB (optional, keep your own)
+# DB (optional)
 # ===========================
 MONGODB_URI = os.getenv("MONGODB_URI")
 mongo_client = MongoClient(MONGODB_URI) if MONGODB_URI else None
@@ -52,101 +55,94 @@ db = mongo_client["ml_app"] if mongo_client else None
 results_collection = db["results"] if db is not None else None
 
 # ===========================
-# Model (example load)
+# Model (LAZY load for fast boot)
 # ===========================
 MODEL_PATH = os.getenv("MODEL_PATH", "models/xgb_model.pkl")
 FEATURES_PATH = os.getenv("FEATURES_PATH", "models/feature_order.pkl")
-model = joblib.load(MODEL_PATH) if os.path.exists(MODEL_PATH) else None
-feature_order = joblib.load(FEATURES_PATH) if os.path.exists(FEATURES_PATH) else None
+
+_model = None
+_feature_order = None
+
+def get_model():
+    """Lazy-load heavy artifacts only when /predict is actually called."""
+    global _model, _feature_order
+    if _model is None:
+        if os.path.exists(MODEL_PATH):
+            _model = joblib.load(MODEL_PATH)
+        if os.path.exists(FEATURES_PATH):
+            _feature_order = joblib.load(FEATURES_PATH)
+    return _model, _feature_order
 
 # ===========================
-# Helpers
+# Auth helper (JWT via Authorization header)
 # ===========================
-def _is_origin_allowed(origin: str) -> bool:
-    return origin in ALLOWED_ORIGINS
-
 def _require_auth():
-    """
-    Minimal auth gate:
-    - Prefer JWT: 'Authorization: Bearer <token>' (validate here if you want)
-    - Or cookie-based: check request.cookies.get('session') or similar
-    """
     auth = request.headers.get("Authorization", "")
-    cookie_session = request.cookies.get("session")  # example cookie name
-
-    # If you use JWT across domains:
     if auth.startswith("Bearer "):
         token = auth.split(" ", 1)[1].strip()
-        # TODO: validate token (e.g., signature, expiry)
+        # TODO: verify token signature/expiry if you need strict security
         return True
-
-    # If you rely on cookie from THIS domain (onrender.com ML API):
-    if cookie_session:
-        # TODO: verify cookie (if you set it on this service)
-        return True
-
     return False
 
 # ===========================
-# Routes
+# Health (keep instant)
 # ===========================
-@app.route("/", methods=["GET"])
-def health():
+@app.route("/", methods=["GET", "HEAD"])
+def root():
     return jsonify({"ok": True, "service": "ml-api"}), 200
 
+@app.route("/health", methods=["GET", "HEAD"])
+def health():
+    return jsonify({"ok": True}), 200
+
+# ===========================
+# Predict
+# ===========================
 @app.route("/predict", methods=["POST", "OPTIONS"])
 def predict():
-    # OPTIONS is handled by flask-cors, but this early return is harmless
+    # Preflight should be fast; flask-cors handles most headers
     if request.method == "OPTIONS":
         return ("", 204)
 
-    # --- Auth gate ---
+    # --- Auth gate (JWT) ---
     if not _require_auth():
         return jsonify({"success": False, "error": "Unauthorized"}), 401
 
-    # --- Read file ---
+    # --- File checks ---
     if "file" not in request.files:
         return jsonify({"success": False, "error": "No file field 'file' in form-data"}), 400
 
     f = request.files["file"]
-    if f.filename == "":
+    if not f.filename:
         return jsonify({"success": False, "error": "Empty filename"}), 400
 
     try:
-        # Read CSV into DataFrame
         df = pd.read_csv(f)
 
-        # (Optional) align features for model
+        model, feature_order = get_model()
         if model is None:
-            # Demo output so the endpoint works even without a model
+            # Demo output to keep endpoint functional without a model
             demo = [{"index": int(i), "churn_pred": 0, "prob": 0.1} for i in range(len(df))]
             result = {"success": True, "predictions": demo}
-
         else:
             X = df[feature_order] if feature_order is not None else df
             if hasattr(model, "predict_proba"):
                 probs = model.predict_proba(X)[:, 1].tolist()
             else:
-                # Some models (e.g., SVM without prob) won’t have predict_proba
                 preds_raw = model.predict(X)
                 probs = [float(x) for x in preds_raw]
 
             preds = model.predict(X).tolist()
-            result_rows = []
-            for i, (p, pr) in enumerate(zip(preds, probs)):
-                result_rows.append({"index": int(i), "churn_pred": int(p), "prob": float(pr)})
+            rows = [{"index": int(i), "churn_pred": int(p), "prob": float(pr)}
+                    for i, (p, pr) in enumerate(zip(preds, probs))]
+            result = {"success": True, "predictions": rows}
 
-            result = {"success": True, "predictions": result_rows}
-
-        # (Optional) Save latest result per user in Mongo by user_id
+        # Optional: store latest result
         user_id = request.args.get("user_id") or request.form.get("user_id")
         if results_collection is not None and user_id:
             results_collection.update_one(
                 {"user_id": user_id},
-                {"$set": {
-                    "user_id": user_id,
-                    "result_json": result,
-                }},
+                {"$set": {"user_id": user_id, "result_json": result}},
                 upsert=True,
             )
 
@@ -157,10 +153,17 @@ def predict():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
+# ===========================
+# Latest results
+# ===========================
 @app.route("/results/latest", methods=["GET", "OPTIONS"])
 def results_latest():
     if request.method == "OPTIONS":
         return ("", 204)
+
+    # Optional (recommended): protect with JWT as well
+    if not _require_auth():
+        return jsonify({"success": False, "error": "Unauthorized"}), 401
 
     user_id = request.args.get("user_id")
     if results_collection is None or not user_id:
@@ -169,23 +172,19 @@ def results_latest():
     doc = results_collection.find_one({"user_id": user_id}, {"_id": 0})
     if not doc:
         return jsonify({"success": False, "error": "No results found for user"}), 404
+
     return jsonify({"success": True, "data": doc.get("result_json")}), 200
 
 # ===========================
-# Example route: set cookie (ONLY if you use cookie auth for this domain)
+# Cookie demo (unused in Option A)
 # ===========================
 @app.route("/auth/mock-login", methods=["POST"])
 def mock_login():
-    # If you want this API to set a cookie for itself (onrender.com)
     resp = make_response(jsonify({"success": True}))
-    # IMPORTANT: Secure + SameSite=None for cross-site cookie
     resp.set_cookie(
         "session", "example-session-id",
         max_age=7 * 24 * 3600,
-        secure=True,
-        httponly=True,
-        samesite="None",
-        path="/",
+        secure=True, httponly=True, samesite="None", path="/",
     )
     return resp
 
