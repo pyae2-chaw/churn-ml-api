@@ -28,8 +28,8 @@ ALLOWED_ORIGINS = list(dict.fromkeys(default_origins + extra_origins))  # dedupe
 
 CORS(
     app,
-    resources={r"/*": {"origins": ALLOWED_ORIGINS}},
-    supports_credentials=True,  # required for cookies
+    resources={r"/*": {"origins": ["https://churn-client.vercel.app", "http://localhost:5173"]}},
+    supports_credentials=False,  # <— turn OFF
     methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "X-Requested-With"],
     expose_headers=["Content-Type"],
@@ -117,8 +117,8 @@ def predict():
     if request.method == "OPTIONS":
         return ("", 204)
 
-    if not _has_session_cookie():
-        return jsonify({"success": False, "error": "Unauthorized (no session cookie)"}), 401
+    #if not _has_session_cookie():
+        #return jsonify({"success": False, "error": "Unauthorized (no session cookie)"}), 401
 
     if "file" not in request.files:
         return jsonify({"success": False, "error": "No file field 'file' in form-data"}), 400
@@ -161,8 +161,8 @@ def results_latest():
     if request.method == "OPTIONS":
         return ("", 204)
 
-    if not _has_session_cookie():
-        return jsonify({"success": False, "error": "Unauthorized (no session cookie)"}), 401
+    #if not _has_session_cookie():
+        #return jsonify({"success": False, "error": "Unauthorized (no session cookie)"}), 401
 
     result = getattr(app, "last_result", None)
     if not result:
