@@ -23,7 +23,18 @@ warnings.filterwarnings("ignore", category=InconsistentVersionWarning)
 warnings.filterwarnings("ignore", message="X does not have valid feature names")
 
 app = Flask(__name__)
-CORS(app, supports_credentials=True, origins=["http://localhost:5173"])
+ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    "https://churn-client.vercel.app"
+]
+
+CORS(app, supports_credentials=True, origins=ALLOWED_ORIGINS)
+
+# ✅ Health check route for Render
+@app.route("/health", methods=["GET", "HEAD"])
+def health():
+    return jsonify({"status": "ok"}), 200
+
 
 UPLOAD_FOLDER = 'uploads'
 RESULT_FOLDER = 'results'
@@ -305,4 +316,4 @@ def download_csv():
     )
 
 if __name__ == '__main__':
-    app.run(port=5000, debug=False)
+    app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)), debug=False)
