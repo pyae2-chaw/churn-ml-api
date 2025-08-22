@@ -30,7 +30,6 @@ ALLOWED_ORIGINS = [
 
 CORS(app, supports_credentials=True, origins=ALLOWED_ORIGINS)
 
-# ✅ Health check route for Render
 @app.route("/health", methods=["GET", "HEAD"])
 def health():
     return jsonify({"status": "ok"}), 200
@@ -151,7 +150,6 @@ def predict():
         df.to_csv(csv_buffer, index=False)
         csv_string = csv_buffer.getvalue()
 
-        # ✅ Get user_id from formData
         user_id = request.form.get("user_id", "anonymous")
         results_collection.delete_many({"user_id": user_id})
         results_collection.insert_one({
